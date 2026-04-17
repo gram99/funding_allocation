@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 from io import BytesIO
+import re
 
 # 1. Page Configuration
 st.set_page_config(page_title="PHA Allocation Dashboard", layout="wide")
@@ -52,19 +53,28 @@ with st.sidebar:
         st.divider()
         p2, f2, c2, t2 = get_weights("Scenario B")
 
-# 3. Validation Logic
-def validate_data(df):
+# 3. Data Cleaning & Validation Logic
+def clean_and_validate(df):
     errors = []
+    # 1. Check for missing columns
     missing = [col for col in REQUIRED_COLS if col not in df.columns]
     if missing:
         errors.append(f"Missing columns: {', '.join(missing)}")
-    if not errors:
-        for col in REQUIRED_COLS[1:]:
-            if not pd.api.types.is_numeric_dtype(df[col]):
-                errors.append(f"Column '{col}' contains non-numeric data.")
-        if df[REQUIRED_COLS].isnull().values.any():
-            errors.append("File contains empty cells.")
-    return errors
+        return df, errors
+
+    # 2. Data Cleaning: Strip symbols like %, $, and commas from numeric columns
+    for col in REQUIRED_COLS[1:]:
+        # Convert to string to safely use regex
+        df[col] = df[col].astype(str).str.replace(r'[%\$,]', '', regex=True)
+        # Convert back to numeric, turning errors into NaN
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # 3. Check for non-numeric results after cleaning
+    for col in REQUIRED_COLS[1:]:
+        if df[col].isnull().any():
+            errors.append(f"Column '{col}' contains invalid text or missing values.")
+            
+    return df, errors
 
 # 4. Calculation Helper
 def calculate_alloc(df_in, p, f, c):
@@ -82,11 +92,12 @@ def calculate_alloc(df_in, p, f, c):
 data_ready = False
 if uploaded_file is not None:
     df_raw = pd.read_csv(uploaded_file)
-    val_errors = validate_data(df_raw)
+    df_raw, val_errors = clean_and_validate(df_raw)
+    
     if val_errors:
         for err in val_errors: st.error(f"❌ {err}")
     else:
-        st.success(f"✅ {len(df_raw)} PHAs Loaded")
+        st.success(f"✅ {len(df_raw)} PHAs Loaded and Cleaned Successfully")
         data_ready = True
 else:
     df_raw = pd.DataFrame({
@@ -98,7 +109,7 @@ else:
         "Occupancy (%)": [88, 97, 82, 98, 91],
         "CFP Obligation (%)": [75, 95, 60, 92, 85]
     })
-    st.info("ℹ️ Using sample data.")
+    st.info("ℹ️ Using sample data. Upload a CSV to perform a real analysis.")
     data_ready = True
 
 if data_ready and t1 == 100 and t2 == 100:
@@ -110,7 +121,6 @@ if data_ready and t1 == 100 and t2 == 100:
         final_df['Difference ($)'] = final_df['Allocation ($)_B'] - final_df['Allocation ($)_A']
         
         st.subheader("Allocation Results: Scenario Comparison")
-        # hide_index=True removes the first column in both views
         st.dataframe(
             final_df.style.format({
                 'Index_A': '{:.2f}', 'Allocation ($)_A': '${:,.2f}', 
@@ -124,7 +134,6 @@ if data_ready and t1 == 100 and t2 == 100:
     else:
         final_df = res1
         st.subheader("Allocation Results")
-        # hide_index=True applied here
         st.dataframe(
             final_df.style.format({'Index': '{:.2f}', 'Allocation ($)': '${:,.2f}'}), 
             use_container_width=True, 
@@ -140,7 +149,8 @@ if data_ready and t1 == 100 and t2 == 100:
         import xlsxwriter
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             final_df.to_excel(writer, index=False, sheet_name='Allocations')
-            meta = pd.DataFrame({"Parameter": ["A", "B", "Notes"], "Value": [f"{p1}/{f1}/{c1}", f"{p2}/{f2}/{c2}" if compare_mode else "N/A", user_notes]})
+            meta = pd.DataFrame({"Parameter": ["Scenario A Weights", "Scenario B Weights", "Notes"], 
+                                 "Value": [f"{p1}%/{f1}%/{c1}%", f"{p2}%/{f2}%/{c2}%" if compare_mode else "N/A", user_notes]})
             meta.to_excel(writer, index=False, sheet_name='Metadata')
         excel_data = output.getvalue()
     except ImportError:
