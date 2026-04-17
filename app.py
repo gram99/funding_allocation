@@ -5,7 +5,7 @@ import plotly.express as px
 
 # 1. Page Configuration
 st.set_page_config(page_title="PHA Recovery Allocation", layout="wide")
-st.title("🏗️ PHA Recovery Readiness & Allocation Tool")
+st.title("PHA Recovery Readiness & Allocation Tool")
 st.markdown("Simulate the allocation of **$15M** in funding based on management performance and capacity.")
 
 # 2. Sidebar & Scenario Logic
