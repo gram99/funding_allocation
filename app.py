@@ -6,7 +6,7 @@ from io import BytesIO
 
 # 1. Page Configuration
 st.set_page_config(page_title="PHA Allocation Dashboard", layout="wide")
-st.title("PHA Recovery Readiness & Allocation Tool")
+st.title("🏗️ PHA Recovery Readiness & Allocation Tool")
 
 # REQUIRED COLUMNS LIST
 REQUIRED_COLS = [
