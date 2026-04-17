@@ -3,16 +3,15 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 from io import BytesIO
-import re
 
 # 1. Page Configuration
 st.set_page_config(page_title="PHA Allocation Dashboard", layout="wide")
-st.title("🏗️ PHA Recovery Readiness & Allocation Tool")
+st.title("PHA Recovery Readiness & Allocation Tool")
 
-# REQUIRED COLUMNS LIST
+# UPDATED TO MATCH YOUR IMAGE EXACTLY
 REQUIRED_COLS = [
     "PHA Name", "Physical Score", "Physical Trend", 
-    "Quick Ratio", "TAR Ratio (%)", "Occupancy (%)", "CFP Obligation (%)"
+    "Quick Ratio", "TAR Ratio", "Occupancy", "CFP Obligation"
 ]
 
 # 2. Sidebar: Upload & Scenarios
@@ -20,7 +19,7 @@ with st.sidebar:
     st.header("📂 Data Source")
     uploaded_file = st.file_uploader("Upload PHA Data (.csv or .txt)", type=["csv", "txt"])
     
-    # Template Download Button
+    # Updated Template Download to match your image
     template_df = pd.DataFrame(columns=REQUIRED_COLS)
     template_csv = template_df.to_csv(index=False).encode('utf-8')
     st.download_button("📥 Download CSV Template", data=template_csv, file_name="pha_template.csv", mime="text/csv")
@@ -56,34 +55,38 @@ with st.sidebar:
 # 3. Data Cleaning & Validation Logic
 def clean_and_validate(df):
     errors = []
-    # 1. Check for missing columns
+    # Strip whitespace from columns in case of copy-paste issues
+    df.columns = df.columns.str.strip()
+    
     missing = [col for col in REQUIRED_COLS if col not in df.columns]
     if missing:
         errors.append(f"Missing columns: {', '.join(missing)}")
         return df, errors
 
-    # 2. Data Cleaning: Strip symbols like %, $, and commas from numeric columns
+    # Clean numeric columns (stripping %, $, and commas)
     for col in REQUIRED_COLS[1:]:
-        # Convert to string to safely use regex
         df[col] = df[col].astype(str).str.replace(r'[%\$,]', '', regex=True)
-        # Convert back to numeric, turning errors into NaN
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # 3. Check for non-numeric results after cleaning
-    for col in REQUIRED_COLS[1:]:
-        if df[col].isnull().any():
-            errors.append(f"Column '{col}' contains invalid text or missing values.")
+    if df[REQUIRED_COLS].isnull().any().any():
+        errors.append("File contains invalid text or missing values in numeric fields.")
             
     return df, errors
 
 # 4. Calculation Helper
 def calculate_alloc(df_in, p, f, c):
     df = df_in.copy()
+    # Trend Normalization
     t_min, t_max = df['Physical Trend'].min(), df['Physical Trend'].max()
     t_range = t_max - t_min
     df['phys_n'] = (df['Physical Score']/100 + (0.5 if t_range == 0 else (df['Physical Trend']-t_min)/t_range))/2
-    df['fin_n'] = (np.clip(df['Quick Ratio']/2, 0, 1) + (1-np.clip(df['TAR Ratio (%)']/20, 0, 1)))/2
-    df['cap_n'] = (df['Occupancy (%)']/100 + df['CFP Obligation (%)']/100)/2
+    
+    # Financial Normalization (Using clean headers)
+    df['fin_n'] = (np.clip(df['Quick Ratio']/2, 0, 1) + (1-np.clip(df['TAR Ratio']/20, 0, 1)))/2
+    
+    # Capacity Normalization (Using clean headers)
+    df['cap_n'] = (df['Occupancy']/100 + df['CFP Obligation']/100)/2
+    
     df['Index'] = (df['phys_n']*(p/100)) + (df['fin_n']*(f/100)) + (df['cap_n']*(c/100))
     df['Allocation ($)'] = (df['Index'] / df['Index'].sum()) * 15000000
     return df[['PHA Name', 'Index', 'Allocation ($)']]
@@ -97,19 +100,20 @@ if uploaded_file is not None:
     if val_errors:
         for err in val_errors: st.error(f"❌ {err}")
     else:
-        st.success(f"✅ {len(df_raw)} PHAs Loaded and Cleaned Successfully")
+        st.success(f"✅ {len(df_raw)} PHAs Loaded Successfully")
         data_ready = True
 else:
+    # Default Sample Data (Matches new header format)
     df_raw = pd.DataFrame({
         "PHA Name": ["HA A", "HA B", "HA C", "HA D", "HA E"],
         "Physical Score": [45, 52, 38, 61, 49],
         "Physical Trend": [5, -2, 8, 1, -4],
         "Quick Ratio": [0.8, 1.2, 0.5, 1.5, 0.9],
-        "TAR Ratio (%)": [12, 4, 18, 3, 9],
-        "Occupancy (%)": [88, 97, 82, 98, 91],
-        "CFP Obligation (%)": [75, 95, 60, 92, 85]
+        "TAR Ratio": [12, 4, 18, 3, 9],
+        "Occupancy": [88, 97, 82, 98, 91],
+        "CFP Obligation": [75, 95, 60, 92, 85]
     })
-    st.info("ℹ️ Using sample data. Upload a CSV to perform a real analysis.")
+    st.info("ℹ️ Using sample data. Upload your CSV to see real results.")
     data_ready = True
 
 if data_ready and t1 == 100 and t2 == 100:
@@ -120,37 +124,31 @@ if data_ready and t1 == 100 and t2 == 100:
         final_df = res1.merge(res2, on="PHA Name", suffixes=('_A', '_B'))
         final_df['Difference ($)'] = final_df['Allocation ($)_B'] - final_df['Allocation ($)_A']
         
-        st.subheader("Allocation Results: Scenario Comparison")
+        st.subheader("Comparison Results")
         st.dataframe(
             final_df.style.format({
                 'Index_A': '{:.2f}', 'Allocation ($)_A': '${:,.2f}', 
                 'Index_B': '{:.2f}', 'Allocation ($)_B': '${:,.2f}', 
                 'Difference ($)': '${:,.2f}'
             }), 
-            use_container_width=True, 
-            hide_index=True
+            use_container_width=True, hide_index=True
         )
         st.plotly_chart(px.bar(final_df, x='PHA Name', y='Difference ($)', color='Difference ($)', color_continuous_scale='RdBu_r'), use_container_width=True)
     else:
         final_df = res1
-        st.subheader("Allocation Results")
-        st.dataframe(
-            final_df.style.format({'Index': '{:.2f}', 'Allocation ($)': '${:,.2f}'}), 
-            use_container_width=True, 
-            hide_index=True
-        )
+        st.subheader("Current Allocation Results")
+        st.dataframe(final_df.style.format({'Index': '{:.2f}', 'Allocation ($)': '${:,.2f}'}), use_container_width=True, hide_index=True)
 
     st.divider()
-    user_notes = st.text_area("📝 Justification & Notes", placeholder="Provide context for these weighting assumptions...")
+    user_notes = st.text_area("📝 Justification & Notes", placeholder="Provide context for these assumptions...")
 
-    # Excel Export
+    # Export Logic
     output = BytesIO()
     try:
         import xlsxwriter
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             final_df.to_excel(writer, index=False, sheet_name='Allocations')
-            meta = pd.DataFrame({"Parameter": ["Scenario A Weights", "Scenario B Weights", "Notes"], 
-                                 "Value": [f"{p1}%/{f1}%/{c1}%", f"{p2}%/{f2}%/{c2}%" if compare_mode else "N/A", user_notes]})
+            meta = pd.DataFrame({"Parameter": ["Scenario A", "Scenario B", "Notes"], "Value": [f"P:{p1} F:{f1} C:{c1}", f"P:{p2} F:{f2} C:{c2}" if compare_mode else "N/A", user_notes]})
             meta.to_excel(writer, index=False, sheet_name='Metadata')
         excel_data = output.getvalue()
     except ImportError:
