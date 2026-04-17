@@ -8,11 +8,21 @@ from io import BytesIO
 st.set_page_config(page_title="PHA Allocation Dashboard", layout="wide")
 st.title("🏗️ PHA Recovery Readiness & Allocation Tool")
 
+# REQUIRED COLUMNS LIST
+REQUIRED_COLS = [
+    "PHA Name", "Physical Score", "Physical Trend", 
+    "Quick Ratio", "TAR Ratio (%)", "Occupancy (%)", "CFP Obligation (%)"
+]
+
 # 2. Sidebar: Upload & Scenarios
 with st.sidebar:
     st.header("📂 Data Source")
-    # File Uploader for CSV/TXT
     uploaded_file = st.file_uploader("Upload PHA Data (.csv or .txt)", type=["csv", "txt"])
+    
+    # Template Download Button
+    template_df = pd.DataFrame(columns=REQUIRED_COLS)
+    template_csv = template_df.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Download CSV Template", data=template_csv, file_name="pha_template.csv", mime="text/csv")
     
     st.divider()
     st.header("Settings")
@@ -33,7 +43,7 @@ with st.sidebar:
         f = st.number_input(f"Financial (%) - {label}", 0, 100, defaults["fin"], key=f"f_{label}")
         c = st.number_input(f"Capacity (%) - {label}", 0, 100, defaults["cap"], key=f"c_{label}")
         total = p + f + c
-        if total != 100: st.error(f"⚠️ {label} must total 100% (Current: {total}%)")
+        if total != 100: st.error(f"⚠️ {label} total must be 100% (Current: {total}%)")
         return p, f, c, total
 
     p1, f1, c1, t1 = get_weights("Scenario A")
@@ -42,24 +52,43 @@ with st.sidebar:
         st.divider()
         p2, f2, c2, t2 = get_weights("Scenario B")
 
-# 3. Calculation Helper
+# 3. Validation Logic
+def validate_data(df):
+    errors = []
+    missing = [col for col in REQUIRED_COLS if col not in df.columns]
+    if missing:
+        errors.append(f"Missing columns: {', '.join(missing)}")
+    if not errors:
+        for col in REQUIRED_COLS[1:]:
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                errors.append(f"Column '{col}' contains non-numeric data.")
+        if df[REQUIRED_COLS].isnull().values.any():
+            errors.append("File contains empty cells.")
+    return errors
+
+# 4. Calculation Helper
 def calculate_alloc(df_in, p, f, c):
     df = df_in.copy()
-    # Normalization Logic
-    df['phys_n'] = (df['Physical Score']/100 + (df['Physical Trend']-df['Physical Trend'].min())/(df['Physical Trend'].max()-df['Physical Trend'].min()))/2
-    df['fin_n'] = (np.clip(df['Quick Ratio']/2,0,1) + (1-np.clip(df['TAR Ratio (%)']/20,0,1)))/2
+    t_min, t_max = df['Physical Trend'].min(), df['Physical Trend'].max()
+    t_range = t_max - t_min
+    df['phys_n'] = (df['Physical Score']/100 + (0.5 if t_range == 0 else (df['Physical Trend']-t_min)/t_range))/2
+    df['fin_n'] = (np.clip(df['Quick Ratio']/2, 0, 1) + (1-np.clip(df['TAR Ratio (%)']/20, 0, 1)))/2
     df['cap_n'] = (df['Occupancy (%)']/100 + df['CFP Obligation (%)']/100)/2
-    # Allocation
     df['Index'] = (df['phys_n']*(p/100)) + (df['fin_n']*(f/100)) + (df['cap_n']*(c/100))
     df['Allocation ($)'] = (df['Index'] / df['Index'].sum()) * 15000000
     return df[['PHA Name', 'Index', 'Allocation ($)']]
 
-# 4. Main App Logic
+# 5. Main App Logic
+data_ready = False
 if uploaded_file is not None:
     df_raw = pd.read_csv(uploaded_file)
-    st.success(f"Loaded {len(df_raw)} records from {uploaded_file.name}")
+    val_errors = validate_data(df_raw)
+    if val_errors:
+        for err in val_errors: st.error(f"❌ {err}")
+    else:
+        st.success(f"✅ {len(df_raw)} PHAs Loaded")
+        data_ready = True
 else:
-    # Fallback to sample data if no file uploaded
     df_raw = pd.DataFrame({
         "PHA Name": ["HA A", "HA B", "HA C", "HA D", "HA E"],
         "Physical Score": [45, 52, 38, 61, 49],
@@ -69,10 +98,10 @@ else:
         "Occupancy (%)": [88, 97, 82, 98, 91],
         "CFP Obligation (%)": [75, 95, 60, 92, 85]
     })
-    st.info("Using sample data. Upload a CSV in the sidebar to use your own.")
+    st.info("ℹ️ Using sample data.")
+    data_ready = True
 
-# Perform Calculations
-if t1 == 100 and t2 == 100:
+if data_ready and t1 == 100 and t2 == 100:
     res1 = calculate_alloc(df_raw, p1, f1, c1)
     
     if compare_mode:
@@ -80,34 +109,43 @@ if t1 == 100 and t2 == 100:
         final_df = res1.merge(res2, on="PHA Name", suffixes=('_A', '_B'))
         final_df['Difference ($)'] = final_df['Allocation ($)_B'] - final_df['Allocation ($)_A']
         
-        st.subheader("Scenario Comparison")
-        st.dataframe(final_df.style.format({'Index_A': '{:.2f}', 'Allocation ($)_A': '${:,.2f}', 'Index_B': '{:.2f}', 'Allocation ($)_B': '${:,.2f}', 'Difference ($)': '${:,.2f}'}), use_container_width=True)
+        st.subheader("Allocation Results: Scenario Comparison")
+        # hide_index=True removes the first column in both views
+        st.dataframe(
+            final_df.style.format({
+                'Index_A': '{:.2f}', 'Allocation ($)_A': '${:,.2f}', 
+                'Index_B': '{:.2f}', 'Allocation ($)_B': '${:,.2f}', 
+                'Difference ($)': '${:,.2f}'
+            }), 
+            use_container_width=True, 
+            hide_index=True
+        )
         st.plotly_chart(px.bar(final_df, x='PHA Name', y='Difference ($)', color='Difference ($)', color_continuous_scale='RdBu_r'), use_container_width=True)
     else:
         final_df = res1
         st.subheader("Allocation Results")
-        st.dataframe(final_df.style.format({'Index': '{:.2f}', 'Allocation ($)': '${:,.2f}'}), use_container_width=True)
+        # hide_index=True applied here
+        st.dataframe(
+            final_df.style.format({'Index': '{:.2f}', 'Allocation ($)': '${:,.2f}'}), 
+            use_container_width=True, 
+            hide_index=True
+        )
 
-    # 5. Notes & Justification Section
     st.divider()
-    st.subheader("📝 Justification & Notes")
-    user_notes = st.text_area("Provide context for these weighting assumptions (will be included in the export):", 
-                              placeholder="e.g., Prioritizing Physical Score due to recent site inspection findings...")
+    user_notes = st.text_area("📝 Justification & Notes", placeholder="Provide context for these weighting assumptions...")
 
-    # 6. Export to Excel
+    # Excel Export
     output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        final_df.to_excel(writer, index=False, sheet_name='Allocations')
-        # Add a separate sheet for weights and notes
-        summary_data = {
-            "Parameter": ["Scenario A Weights", "Scenario B Weights (if enabled)", "Total Funding", "Notes"],
-            "Value": [f"Phys:{p1} Fin:{f1} Cap:{c1}", f"Phys:{p2} Fin:{f2} Cap:{c2}" if compare_mode else "N/A", "$15,000,000", user_notes]
-        }
-        pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name='Simulation_Meta')
+    try:
+        import xlsxwriter
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            final_df.to_excel(writer, index=False, sheet_name='Allocations')
+            meta = pd.DataFrame({"Parameter": ["A", "B", "Notes"], "Value": [f"{p1}/{f1}/{c1}", f"{p2}/{f2}/{c2}" if compare_mode else "N/A", user_notes]})
+            meta.to_excel(writer, index=False, sheet_name='Metadata')
+        excel_data = output.getvalue()
+    except ImportError:
+        with pd.ExcelWriter(output) as writer:
+            final_df.to_excel(writer, index=False)
+        excel_data = output.getvalue()
 
-    st.download_button(
-        label="📥 Download Audit-Ready Excel Report",
-        data=output.getvalue(),
-        file_name="pha_funding_simulation.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.download_button("📥 Download Audit-Ready Excel Report", excel_data, "pha_audit_report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
